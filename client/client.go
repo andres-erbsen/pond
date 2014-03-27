@@ -83,6 +83,8 @@ import (
 	"github.com/agl/pond/client/ratchet"
 	"github.com/agl/pond/panda"
 	pond "github.com/agl/pond/protos"
+	dename "github.com/andres-erbsen/dename/protocol"
+	"github.com/andres-erbsen/dename/dnmclient"
 )
 
 const (
@@ -238,6 +240,7 @@ type UI interface {
 	// import from a entombed statefile. It returns whether an import
 	// occured and an error.
 	createAccountUI(stateFile *disk.StateFile, pw string) (bool, error)
+	registerDenameUI() error
 	keyPromptUI(stateFile *disk.StateFile) error
 	processFetch(msg *InboxMessage)
 	processServerAnnounce(announce *InboxMessage)
@@ -775,6 +778,10 @@ func (c *client) loadUI() error {
 		}
 		c.ui.createErasureStorage(pw, stateFile)
 		imported, err = c.ui.createAccountUI(stateFile, pw)
+		if err != nil {
+			return err
+		}
+		err = c.ui.registerDenameUI()
 		if err != nil {
 			return err
 		}
@@ -1347,3 +1354,27 @@ func (c *client) importTombFile(stateFile *disk.StateFile, keyHex, path string) 
 
 	return nil
 }
+
+func (c *client) doRegisterDename(username, regtoken string, displayMsg func(string)) (err error) {
+	if username == "" {
+		return nil
+	}
+
+	profile := &dename.Identity{Dename: &dename.PublicKey{Ed25519: c.pub[:]}}
+	err = profile.Set(16333, c.identityPublic[:])
+	if err != nil {
+		return
+	}
+	displayMsg("Registering name")
+	err = dnmclient.New(nil, "", c.torDialer()).Register(
+		(*dename.Ed25519Secret)(&c.priv),
+		profile,
+		username,
+		regtoken,
+	)
+	if err != nil {
+		displayMsg("Failed to register name")
+	}
+	return
+}
+

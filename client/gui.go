@@ -19,6 +19,8 @@ import (
 	"github.com/agl/pond/client/disk"
 	"github.com/agl/pond/panda"
 	pond "github.com/agl/pond/protos"
+	"github.com/andres-erbsen/dename/dnmclient"
+	"code.google.com/p/go.crypto/nacl/box"
 )
 
 const haveGUI = true
@@ -1093,6 +1095,128 @@ func (c *guiClient) createAccountUI(stateFile *disk.StateFile, pw string) (didIm
 	}
 
 	return false, nil
+}
+func (c *guiClient) registerDenameUI() error {
+	ui := VBox{
+		widgetBase: widgetBase{padding: 40, expand: true, fill: true, name: "vbox"},
+		children: []Widget{
+			Label{
+				widgetBase: widgetBase{font: "DejaVu Sans 30"},
+				text:       "Get a Dename username",
+			},
+			Label{
+				widgetBase: widgetBase{
+					padding: 20,
+					font:    "DejaVu Sans 14",
+				},
+				text: fmt.Sprintf(msgDenameIntro, c.identityPublic[:]),
+				wrap: 600,
+			},
+			HBox{
+				spacing: 5,
+				children: []Widget{
+					Label{
+						text:   "Username:",
+						yAlign: 0.5,
+					},
+					Entry{
+						widgetBase: widgetBase{name: "username"},
+						width:      60,
+						text:       "",
+					},
+				},
+			},
+			HBox{
+				spacing: 5,
+				children: []Widget{
+					Label{
+						text:   "Email confirmation:",
+						yAlign: 0.5,
+					},
+					Entry{
+						widgetBase: widgetBase{name: "regtoken"},
+						width:      60,
+						text:       "",
+					},
+				},
+			},
+			HBox{
+				widgetBase: widgetBase{padding: 40},
+				children: []Widget{
+					Button{
+						widgetBase: widgetBase{name: "register"},
+						text:       "Continue",
+					},
+				},
+			},
+		},
+	}
+
+	c.gui.Actions() <- SetBoxContents{name: "body", child: ui}
+	c.gui.Actions() <- SetFocus{name: "register"}
+	c.gui.Actions() <- UIState{uiStateCreateAccount}
+	c.gui.Signal()
+
+	var spinnerCreated bool
+	for {
+		click, ok := <-c.gui.Events()
+		if !ok {
+			c.ShutdownAndSuspend()
+		}
+		username := click.(Click).entries["username"]
+		regtoken := click.(Click).entries["regtoken"]
+
+		c.gui.Actions() <- Sensitive{name: "username", sensitive: false}
+		c.gui.Actions() <- Sensitive{name: "regtoken", sensitive: false}
+		c.gui.Actions() <- Sensitive{name: "register", sensitive: false}
+
+		const initialMessage = "Registering..."
+
+		if !spinnerCreated {
+			c.gui.Actions() <- Append{
+				name: "vbox",
+				children: []Widget{
+					HBox{
+						widgetBase: widgetBase{name: "statusbox"},
+						spacing:    10,
+						children: []Widget{
+							Spinner{
+								widgetBase: widgetBase{name: "spinner"},
+							},
+							Label{
+								widgetBase: widgetBase{name: "status"},
+								text:       initialMessage,
+							},
+						},
+					},
+				},
+			}
+			spinnerCreated = true
+		} else {
+			c.gui.Actions() <- StartSpinner{name: "spinner"}
+			c.gui.Actions() <- SetText{name: "status", text: initialMessage}
+		}
+		c.gui.Signal()
+
+		updateMsg := func(msg string) {
+			c.gui.Actions() <- SetText{name: "status", text: msg}
+			c.gui.Signal()
+		}
+
+		if err := c.doRegisterDename(username, regtoken, updateMsg); err != nil {
+			c.gui.Actions() <- StopSpinner{name: "spinner"}
+			c.gui.Actions() <- UIError{err}
+			c.gui.Actions() <- SetText{name: "status", text: err.Error()}
+			c.gui.Actions() <- Sensitive{name: "username", sensitive: true}
+			c.gui.Actions() <- Sensitive{name: "register", sensitive: true}
+			c.gui.Signal()
+			continue
+		}
+
+		break
+	}
+
+	return nil
 }
 
 func (c *guiClient) ShutdownAndSuspend() error {
@@ -2198,6 +2322,13 @@ Manual keying (not generally recommended) involves exchanging key material with 
 								text: "Manual Keying",
 							}},
 							{1, 1, Label{widgetBase: widgetBase{hExpand: true}}},
+							{1, 1, Button{
+								widgetBase: widgetBase{
+									name: "dename",
+								},
+								text: "dename",
+							}},
+							{1, 1, Label{widgetBase: widgetBase{hExpand: true}}},
 						},
 					},
 				}},
@@ -2231,7 +2362,7 @@ Manual keying (not generally recommended) involves exchanging key material with 
 		keyAgreementClick = nil
 		switch click.name {
 		case "name":
-		case "manual", "shared":
+		case "manual", "shared", "dename":
 			// If the user clicked one of the key-agreement type
 			// buttons then we remember the event for the next
 			// event loop, below.
@@ -2301,16 +2432,58 @@ Manual keying (not generally recommended) involves exchanging key material with 
 			nextFunc = func(contact *Contact, existing bool, nextRow int) interface{} {
 				return c.newContactPanda(contact, existing, nextRow)
 			}
+		case "dename":
+			nextFunc = func(contact *Contact, existing bool, nextRow int) interface{} {
+				return c.newContactDename(contact, existing, nextRow)
+			}
 		default:
 			continue
 		}
 
 		c.gui.Actions() <- Sensitive{name: "manual", sensitive: false}
 		c.gui.Actions() <- Sensitive{name: "shared", sensitive: false}
+		c.gui.Actions() <- Sensitive{name: "dename", sensitive: false}
 		return nextFunc(contact, existing, nextRow)
 	}
 
 	panic("unreachable")
+}
+
+func (c *guiClient) newContactDename(contact *Contact, existing bool, nextRow int) interface{} {
+	c.newKeyExchange(contact)
+	profile, err := dnmclient.New(nil, "", c.torDialer()).Lookup(contact.name)
+	if err != nil {
+		return err
+	}
+
+	their_pk_bs, err := profile.Get(16333)
+	if err != nil {
+		return err
+	}
+	var their_pk, shared_key [32]byte
+	copy(their_pk[:], their_pk_bs)
+	box.Precompute(&shared_key, &their_pk, &c.client.identity)
+
+	secret := panda.SharedSecret{Secret: string(shared_key[:])}
+	mp := c.newMeetingPlace()
+
+	c.contacts[contact.id] = contact
+	c.contactsUI.Add(contact.id, contact.name, "pending", indicatorNone)
+	c.contactsUI.Select(contact.id)
+
+	kx, err := panda.NewKeyExchange(c.rand, mp, &secret, contact.kxsBytes)
+	if err != nil {
+		return err
+	}
+	kx.Testing = c.testing
+	contact.pandaKeyExchange = kx.Marshal()
+	contact.kxsBytes = nil
+
+	c.save()
+	c.pandaWaitGroup.Add(1)
+	contact.pandaShutdownChan = make(chan struct{})
+	go c.runPANDA(contact.pandaKeyExchange, contact.id, contact.name, contact.pandaShutdownChan)
+	return c.showContact(contact.id)
 }
 
 func (c *guiClient) newContactManual(contact *Contact, existing bool, nextRow int) interface{} {

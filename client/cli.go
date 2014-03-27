@@ -424,6 +424,38 @@ func (c *cliClient) createAccountUI(stateFile *disk.StateFile, pw string) (bool,
 	return false, nil
 }
 
+func (c *cliClient) registerDenameUI() error {
+	c.Printf("%s "+msgDenameIntro+"\n", termInfoPrefix, c.identityPublic[:])
+	for {
+		c.term.SetPrompt("username> ")
+		username, err := c.term.ReadLine()
+		if err != nil {
+			return err
+		}
+		if len(username) == 0 {
+			return nil
+		}
+
+		c.term.SetPrompt("email verification> ")
+		regtoken, err := c.term.ReadLine()
+		if err != nil {
+			return err
+		}
+		if len(regtoken) == 0 {
+			continue
+		}
+		updateMsg := func(msg string) {
+			c.Printf("%s %s\n", termInfoPrefix, msg)
+		}
+		err = c.doRegisterDename(username, regtoken, updateMsg)
+		if err != nil {
+			c.Printf("%s %s\n", termErrPrefix, err.Error())
+			continue
+		}
+		return nil
+	}
+}
+
 func (c *cliClient) keyPromptUI(stateFile *disk.StateFile) error {
 	c.Printf("%s %s\n", termInfoPrefix, msgKeyPrompt)
 
