@@ -12,5 +12,6 @@ const (
 To verify your email address, go to <https://dename.mit.edu/>.
 If you do not wish to register a dename username now, leave the username blank.
 You can also add pond to an existing username by running the following command:
-`+"\tdnmgr set 16333 \"$(echo %x | xxd -r -p)\""
+
+`+"\tdnmgr set 16333 \"$(echo %x | xxd -r -p)\"\n"
 )

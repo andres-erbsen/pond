@@ -1102,7 +1102,7 @@ func (c *guiClient) registerDenameUI() error {
 		children: []Widget{
 			Label{
 				widgetBase: widgetBase{font: "DejaVu Sans 30"},
-				text:       "Get a Dename username",
+				text:       "Get a dename username",
 			},
 			Label{
 				widgetBase: widgetBase{
@@ -1110,6 +1110,7 @@ func (c *guiClient) registerDenameUI() error {
 					font:    "DejaVu Sans 14",
 				},
 				text: fmt.Sprintf(msgDenameIntro, c.identityPublic[:]),
+				selectable: true,
 				wrap: 600,
 			},
 			HBox{
